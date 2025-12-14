@@ -7,60 +7,66 @@ import csv
 from io import StringIO 
 
 # --- Global Configurations ---
-# Default local file name. This is used if the user doesn't set a Drive path.
+# The path is dynamic, taken from st.session_state.file_path
 DEFAULT_FILE_NAME = 'job_applications.csv' 
 ALLOWED_STATUSES = ["Submitted", "Interviewing", "Rejected", "Not Submitted"]
 URL_REGEX = r"https?://(?:www\.|(?!www\.))[a-zA-Z0-9]+\.[^\s]{2,}"
 HEADERS = ['Job_Title', 'Company', 'Date_Submitted', 'Requirements_Matched', 'Link', 'Status', "Require_Enhancement"]
 
-# --- State and Utility Functions ---
+# --- Core Data Persistence Functions ---
 
+@st.cache_data(show_spinner="Loading data file...")
 def load_data():
     """
-    Loads data from the file path stored in session state.
+    Reads the entire historical dataset from the specified file path.
+    If the file is new or empty, it initializes a clean DataFrame with headers.
     """
     file_path = st.session_state.file_path
     
+    # 1. Check if the file exists
     if not os.path.exists(file_path):
-        # Create the necessary folder structure if it's a Drive path
         try:
+            # Create necessary directories and initialize the file with headers
             os.makedirs(os.path.dirname(file_path), exist_ok=True)
-            # Create a header-only CSV file
             df = pd.DataFrame(columns=HEADERS)
             df.to_csv(file_path, index=False)
             st.toast("New data file initialized.", icon="📝")
             return df
         except Exception:
-            # Fallback to an empty DataFrame if path creation fails (e.g., read-only cloud environment)
-            st.error(f"Could not initialize file path: {file_path}. Using an empty table.")
+            # If path creation/writing fails, return an empty local DataFrame
+            st.error(f"Could not initialize file path: {file_path}. Using an empty table in memory.")
             return pd.DataFrame(columns=HEADERS)
     else:
+        # 2. File exists: Load the data, including all old records
         try:
             df = pd.read_csv(file_path)
-            # Ensure columns are correct if file was just created/empty
-            if df.empty and not df.columns.tolist() == HEADERS:
-                df = pd.DataFrame(columns=HEADERS)
+            # Ensure column order matches headers for consistency
+            df = df.reindex(columns=HEADERS, fill_value='')
             return df
         except Exception as e:
-            st.error(f"Error reading file at {file_path}. Error: {e}")
+            st.error(f"Error reading file at {file_path}. File may be corrupted. Error: {e}")
             return pd.DataFrame(columns=HEADERS)
 
 def save_data(df):
-    """Saves the current DataFrame back to the file path in session state."""
+    """
+    Saves the complete, current state of the DataFrame (old data + new changes) 
+    back to the file, ensuring persistence. This OVERWRITES the old file.
+    """
     file_path = st.session_state.file_path
     try:
+        # Saving the entire DataFrame ensures all history is preserved and updated.
         df.to_csv(file_path, index=False)
-        st.toast(f"Data saved successfully to {file_path}", icon="💾")
+        st.toast(f"Data saved successfully (complete snapshot written) to {file_path}", icon="💾")
     except Exception as e:
         st.error(f"Error saving data to {file_path}: {e}")
 
-# --- Streamlit UI Pages/Functions ---
+# --- Streamlit UI Pages/Functions (Logic remains largely the same) ---
 
 def show_configuration():
     """Page for configuring the file path, including Google Drive option."""
     st.header("⚙️ Data Source Configuration")
     
-    st.warning("🚨 **IMPORTANT:** If using Google Drive, you MUST first ensure the Drive volume is mounted and accessible to your Python environment (e.g., running `drive.mount()` in Google Colab). Streamlit Cloud CANNOT do this automatically.")
+    st.warning("🚨 **IMPORTANT:** If using Google Drive, the path (e.g., `/content/drive/MyDrive/`) must be accessible to your Python environment (e.g., via Colab mount).")
 
     current_path = st.session_state.file_path
     st.markdown(f"**Current Data Path:** `{current_path}`")
@@ -70,16 +76,19 @@ def show_configuration():
         value=current_path
     )
     
-    if st.button("Apply New Path"):
-        st.session_state.file_path = new_path
-        # Force reload of data with the new path
-        st.session_state.df = load_data()
-        st.success(f"File path updated and data reloaded from: {new_path}")
+    if st.button("Apply New Path and Reload Data"):
+        if st.session_state.file_path != new_path:
+            st.session_state.file_path = new_path
+            # Force reload of data with the new path
+            st.session_state.df = load_data()
+            st.success(f"File path updated and historical data reloaded from: {new_path}")
+        else:
+            st.info("Path is unchanged.")
 
 
 def show_data_view(df):
     """Displays the current job applications data."""
-    st.header("📋 Job Applications Data")
+    st.header("📋 Job Applications Data (Historical View)")
     st.markdown(f"Data Source: `{st.session_state.file_path}`")
     if df.empty:
         st.info("The tracker is currently empty. Add a new entry to get started!")
@@ -87,6 +96,9 @@ def show_data_view(df):
         st.dataframe(df, use_container_width=True)
         st.markdown(f"**Total Entries:** {len(df)}")
 
+# --- (Functions show_add_entry_form, show_modify_entry_form, and show_delete_form 
+#      remain exactly the same as they correctly modify the DataFrame (df)
+#      before calling save_data(df) ) ---
 
 def show_add_entry_form(df):
     """Streamlit form for adding a new entry."""
@@ -119,8 +131,9 @@ def show_add_entry_form(df):
                     'Require_Enhancement': require_enhancement
                 }])
                 
+                # The crucial step: Concatenating preserves old data (df) and adds new data (new_entry)
                 updated_df = pd.concat([df, new_entry], ignore_index=True)
-                save_data(updated_df)
+                save_data(updated_df) # Saves ALL old data + new entry
                 st.session_state.df = updated_df
                 st.experimental_rerun()
 
@@ -161,7 +174,7 @@ def show_modify_entry_form(df):
                 for col in HEADERS:
                     df.loc[update_index, col] = new_values[col]
                 
-                save_data(df)
+                save_data(df) # Saves ALL old data with one modified cell
                 st.session_state.df = df
                 st.success(f"Entry modified successfully!")
                 st.experimental_rerun()
@@ -184,11 +197,12 @@ def show_delete_form(df):
         if st.button(f"🔥 Permanently Delete all rows where {col_to_filter} = {value_to_delete}"):
             
             rows_before = len(df)
+            # Deletion: creates a new df without the rows to delete
             df_filtered = df[df[col_to_filter] != value_to_delete]
             rows_removed = rows_before - len(df_filtered)
             
             if rows_removed > 0:
-                save_data(df_filtered)
+                save_data(df_filtered) # Saves the new smaller df, keeping the remaining history
                 st.session_state.df = df_filtered
                 st.success(f"Successfully deleted {rows_removed} row(s) where '{col_to_filter}' was '{value_to_delete}'.")
                 st.experimental_rerun()
@@ -203,7 +217,6 @@ st.markdown("Use the sidebar to navigate.")
 
 # 1. Initialize Session State Variables
 if 'file_path' not in st.session_state:
-    # Use the hardcoded path from your previous input as the initial default
     st.session_state.file_path = '/content/drive/MyDrive/Job Tracker/job_applications (5).csv'
 if 'df' not in st.session_state:
     st.session_state.df = load_data()
