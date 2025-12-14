@@ -6,11 +6,8 @@ import re
 import csv
 from io import StringIO 
 
-from google.colab import drive
-drive.mount('/content/drive')
-
 # --- Global Configurations ---
-# The path is dynamic, taken from st.session_state.file_path
+# Default file path for use on Streamlit Community Cloud (local sandbox)
 DEFAULT_FILE_NAME = 'job_applications.csv' 
 ALLOWED_STATUSES = ["Submitted", "Interviewing", "Rejected", "Not Submitted"]
 URL_REGEX = r"https?://(?:www\.|(?!www\.))[a-zA-Z0-9]+\.[^\s]{2,}"
@@ -21,29 +18,30 @@ HEADERS = ['Job_Title', 'Company', 'Date_Submitted', 'Requirements_Matched', 'Li
 @st.cache_data(show_spinner="Loading data file...")
 def load_data():
     """
-    Reads the entire historical dataset from the specified file path.
-    If the file is new or empty, it initializes a clean DataFrame with headers.
+    Reads the entire historical dataset from the file path stored in session state.
+    Handles file initialization if the file or folder structure doesn't exist.
     """
     file_path = st.session_state.file_path
     
-    # 1. Check if the file exists
+    # 1. Check if the file exists and handle folder creation
     if not os.path.exists(file_path):
         try:
-            # Create necessary directories and initialize the file with headers
+            # Create necessary directories (e.g., if using a new Google Drive folder)
             os.makedirs(os.path.dirname(file_path), exist_ok=True)
+            # Initialize a clean DataFrame with headers and save it
             df = pd.DataFrame(columns=HEADERS)
             df.to_csv(file_path, index=False)
             st.toast("New data file initialized.", icon="📝")
             return df
         except Exception:
-            # If path creation/writing fails, return an empty local DataFrame
-            st.error(f"Could not initialize file path: {file_path}. Using an empty table in memory.")
+            # Fallback for environments like Streamlit Cloud where custom paths might fail
+            st.warning(f"Could not initialize file path: {file_path}. Using an empty table in memory.")
             return pd.DataFrame(columns=HEADERS)
     else:
-        # 2. File exists: Load the data, including all old records
+        # 2. File exists: Load the historical data
         try:
             df = pd.read_csv(file_path)
-            # Ensure column order matches headers for consistency
+            # Ensure columns are standardized (important for older/empty files)
             df = df.reindex(columns=HEADERS, fill_value='')
             return df
         except Exception as e:
@@ -53,23 +51,27 @@ def load_data():
 def save_data(df):
     """
     Saves the complete, current state of the DataFrame (old data + new changes) 
-    back to the file, ensuring persistence. This OVERWRITES the old file.
+    back to the file path, ensuring all history is preserved and updated.
     """
     file_path = st.session_state.file_path
     try:
-        # Saving the entire DataFrame ensures all history is preserved and updated.
+        # This overwrites the old file with the complete, updated snapshot.
         df.to_csv(file_path, index=False)
         st.toast(f"Data saved successfully (complete snapshot written) to {file_path}", icon="💾")
     except Exception as e:
         st.error(f"Error saving data to {file_path}: {e}")
 
-# --- Streamlit UI Pages/Functions (Logic remains largely the same) ---
+# --- Streamlit UI Pages/Functions ---
 
 def show_configuration():
     """Page for configuring the file path, including Google Drive option."""
     st.header("⚙️ Data Source Configuration")
     
-    st.warning("🚨 **IMPORTANT:** If using Google Drive, the path (e.g., `/content/drive/MyDrive/`) must be accessible to your Python environment (e.g., via Colab mount).")
+    st.warning("""
+    🚨 **Data Persistence Note:**
+    * **Google Drive:** To use a path like `/content/drive/MyDrive/...`, you must run this app **inside a Google Colab notebook** where your Drive is mounted.
+    * **Streamlit Cloud (Default):** The file path `job_applications.csv` saves data locally to the Streamlit app's sandbox. This data is **persistent** within the app's lifetime on Streamlit Cloud.
+    """)
 
     current_path = st.session_state.file_path
     st.markdown(f"**Current Data Path:** `{current_path}`")
@@ -99,9 +101,6 @@ def show_data_view(df):
         st.dataframe(df, use_container_width=True)
         st.markdown(f"**Total Entries:** {len(df)}")
 
-# --- (Functions show_add_entry_form, show_modify_entry_form, and show_delete_form 
-#      remain exactly the same as they correctly modify the DataFrame (df)
-#      before calling save_data(df) ) ---
 
 def show_add_entry_form(df):
     """Streamlit form for adding a new entry."""
@@ -134,9 +133,9 @@ def show_add_entry_form(df):
                     'Require_Enhancement': require_enhancement
                 }])
                 
-                # The crucial step: Concatenating preserves old data (df) and adds new data (new_entry)
+                # Appending the new data to the old data
                 updated_df = pd.concat([df, new_entry], ignore_index=True)
-                save_data(updated_df) # Saves ALL old data + new entry
+                save_data(updated_df) # Saves the full dataset (old + new)
                 st.session_state.df = updated_df
                 st.experimental_rerun()
 
@@ -150,16 +149,16 @@ def show_modify_entry_form(df):
         return
 
     # Use a selectbox to pick the entry based on a key identifier
-    df['Identifier'] = df['Job_Title'] + ' - ' + df['Company']
-    identifier = st.selectbox("Select Entry to Modify:", df['Identifier'].unique())
+    df_temp = df.copy()
+    df_temp['Identifier'] = df_temp['Job_Title'] + ' - ' + df_temp['Company']
+    identifier = st.selectbox("Select Entry to Modify:", df_temp['Identifier'].unique())
     
     if identifier:
-        selected_row = df[df['Identifier'] == identifier].iloc[0]
+        selected_row = df_temp[df_temp['Identifier'] == identifier].iloc[0]
         update_index = selected_row.name
         
         st.markdown(f"**Modifying:** `{identifier}`")
         
-        # Create dynamic inputs for all columns
         new_values = {}
         with st.form("modify_form"):
             for col in HEADERS:
@@ -177,7 +176,7 @@ def show_modify_entry_form(df):
                 for col in HEADERS:
                     df.loc[update_index, col] = new_values[col]
                 
-                save_data(df) # Saves ALL old data with one modified cell
+                save_data(df) # Saves the full dataset with the modified cell
                 st.session_state.df = df
                 st.success(f"Entry modified successfully!")
                 st.experimental_rerun()
@@ -200,12 +199,12 @@ def show_delete_form(df):
         if st.button(f"🔥 Permanently Delete all rows where {col_to_filter} = {value_to_delete}"):
             
             rows_before = len(df)
-            # Deletion: creates a new df without the rows to delete
+            # Filters the DataFrame to keep only the desired rows
             df_filtered = df[df[col_to_filter] != value_to_delete]
             rows_removed = rows_before - len(df_filtered)
             
             if rows_removed > 0:
-                save_data(df_filtered) # Saves the new smaller df, keeping the remaining history
+                save_data(df_filtered) # Saves the remaining historical data
                 st.session_state.df = df_filtered
                 st.success(f"Successfully deleted {rows_removed} row(s) where '{col_to_filter}' was '{value_to_delete}'.")
                 st.experimental_rerun()
@@ -220,7 +219,8 @@ st.markdown("Use the sidebar to navigate.")
 
 # 1. Initialize Session State Variables
 if 'file_path' not in st.session_state:
-    st.session_state.file_path = '/content/drive/MyDrive/Job Tracker/job_applications (5).csv'
+    # Set default path to a simple local file for Streamlit Cloud deployment
+    st.session_state.file_path = DEFAULT_FILE_NAME 
 if 'df' not in st.session_state:
     st.session_state.df = load_data()
 
