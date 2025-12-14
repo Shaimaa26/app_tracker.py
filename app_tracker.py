@@ -5,7 +5,6 @@ from datetime import datetime
 import re
 import csv
 from io import StringIO 
-# NOTE: If you switch to Excel, you must add 'import openpyxl' to requirements.txt
 
 # --- Global Configurations ---
 # Default file path for use on Streamlit Community Cloud (local sandbox)
@@ -20,7 +19,6 @@ HEADERS = ['Job_Title', 'Company', 'Date_Submitted', 'Requirements_Matched', 'Li
 def load_data():
     """
     Reads the entire historical dataset from the file path stored in session state.
-    This function is decorated to cache the result, which is why manual cache clearing is needed.
     """
     file_path = st.session_state.file_path
     
@@ -28,18 +26,21 @@ def load_data():
     if not os.path.exists(file_path):
         try:
             # Create necessary directories and initialize the file
-            os.makedirs(os.path.dirname(file_path) or '.', exist_ok=True)
+            # Use os.path.dirname and check if it's non-empty to avoid creating directories for simple file names
+            dir_name = os.path.dirname(file_path)
+            if dir_name:
+                os.makedirs(dir_name, exist_ok=True)
+                
             df = pd.DataFrame(columns=HEADERS)
             df.to_csv(file_path, index=False)
             st.toast("New data file initialized.", icon="📝")
             return df
-        except Exception:
-            st.warning(f"Could not initialize file path: {file_path}. Using an empty table in memory.")
+        except Exception as e:
+            st.warning(f"Could not initialize file path: {file_path}. Error: {e}. Using an empty table in memory.")
             return pd.DataFrame(columns=HEADERS)
     else:
         # 2. File exists: Load the historical data
         try:
-            # Use read_csv for CSV format
             df = pd.read_csv(file_path)
             # Ensure columns are standardized and ordered correctly
             df = df.reindex(columns=HEADERS, fill_value='')
@@ -55,7 +56,6 @@ def save_data(df):
     """
     file_path = st.session_state.file_path
     try:
-        # This overwrites the old file with the complete, updated snapshot.
         df.to_csv(file_path, index=False)
         st.toast(f"Data saved successfully (complete snapshot written) to {file_path}", icon="💾")
     except Exception as e:
@@ -69,7 +69,7 @@ def show_configuration():
     
     st.warning("""
     🚨 **Data Persistence Note:**
-    * **Google Drive:** To use paths like `/content/drive/MyDrive/...`, you must run this app **inside a Google Colab notebook** where your Drive is mounted. Streamlit Cloud cannot access private Google Drive paths.
+    * **Google Drive:** To use paths like `/content/drive/MyDrive/...`, you must run this app **inside a Google Colab notebook** where your Drive is mounted.
     * **If data is missing:** Use the button below to force a complete reload.
     """)
 
@@ -84,19 +84,19 @@ def show_configuration():
     if st.button("Apply New Path and Reload Data"):
         if st.session_state.file_path != new_path:
             st.session_state.file_path = new_path
-            # Force reload of data with the new path
             st.session_state.df = load_data()
             st.success(f"File path updated and historical data reloaded from: {new_path}")
         else:
             st.info("Path is unchanged.")
-    
+        st.rerun() # FIXED: Use st.rerun()
+
     st.markdown("---")
     # --- CRITICAL FIX FOR DATA INCONSISTENCY ---
     if st.button("🔄 **Clear Streamlit Cache and Force Full Reload**", type="primary"):
         st.cache_data.clear()
         st.session_state.df = load_data() 
-        st.success("Cache cleared and data reloaded successfully! The table below should now reflect the file content.")
-        st.experimental_rerun()
+        st.success("Cache cleared and data reloaded successfully!")
+        st.rerun() # FIXED: Use st.rerun()
 
 
 def show_data_view(df):
@@ -141,11 +141,10 @@ def show_add_entry_form(df):
                     'Require_Enhancement': require_enhancement
                 }])
                 
-                # Appending the new data to the old data
                 updated_df = pd.concat([df, new_entry], ignore_index=True)
-                save_data(updated_df) # Saves the full dataset (old + new)
+                save_data(updated_df) 
                 st.session_state.df = updated_df
-                st.experimental_rerun()
+                st.rerun() # FIXED: Use st.rerun()
 
 
 def show_modify_entry_form(df):
@@ -156,7 +155,6 @@ def show_modify_entry_form(df):
         st.info("No data available to modify.")
         return
 
-    # Use a selectbox to pick the entry based on a key identifier
     df_temp = df.copy()
     df_temp['Identifier'] = df_temp['Job_Title'].astype(str) + ' - ' + df_temp['Company'].astype(str)
     identifier = st.selectbox("Select Entry to Modify:", df_temp['Identifier'].unique())
@@ -174,7 +172,6 @@ def show_modify_entry_form(df):
                     st.text(f"Date_Submitted: {selected_row[col]} (Not editable)")
                     new_values[col] = selected_row[col]
                 elif col == 'Status':
-                    # Handle potential non-string values from file read
                     current_status = str(selected_row[col]) if selected_row[col] in ALLOWED_STATUSES else ALLOWED_STATUSES[0]
                     new_values[col] = st.selectbox(f"New Status for {col}:", options=ALLOWED_STATUSES, index=ALLOWED_STATUSES.index(current_status))
                 else:
@@ -186,10 +183,10 @@ def show_modify_entry_form(df):
                 for col in HEADERS:
                     df.loc[update_index, col] = new_values[col]
                 
-                save_data(df) # Saves the full dataset with the modified cell
+                save_data(df) 
                 st.session_state.df = df
                 st.success(f"Entry modified successfully!")
-                st.experimental_rerun()
+                st.rerun() # FIXED: Use st.rerun()
 
 
 def show_delete_form(df):
@@ -209,15 +206,14 @@ def show_delete_form(df):
         if st.button(f"🔥 Permanently Delete all rows where {col_to_filter} = {value_to_delete}"):
             
             rows_before = len(df)
-            # Filters the DataFrame to keep only the desired rows
-            df_filtered = df[df[col_to_filter].astype(str) != str(value_to_delete)] # Ensure comparison is consistent
+            df_filtered = df[df[col_to_filter].astype(str) != str(value_to_delete)] 
             rows_removed = rows_before - len(df_filtered)
             
             if rows_removed > 0:
-                save_data(df_filtered) # Saves the remaining historical data
+                save_data(df_filtered) 
                 st.session_state.df = df_filtered
                 st.success(f"Successfully deleted {rows_removed} row(s) where '{col_to_filter}' was '{value_to_delete}'.")
-                st.experimental_rerun()
+                st.rerun() # FIXED: Use st.rerun()
             else:
                 st.warning(f"No rows found with the value '{value_to_delete}' to delete.")
 
@@ -229,7 +225,7 @@ st.markdown("Use the sidebar to navigate.")
 
 # 1. Initialize Session State Variables
 if 'file_path' not in st.session_state:
-    # Use the simple local default path for Streamlit Cloud deployment
+    # Set default path to a simple local file for Streamlit Cloud deployment
     st.session_state.file_path = DEFAULT_FILE_NAME 
 if 'df' not in st.session_state:
     st.session_state.df = load_data()
