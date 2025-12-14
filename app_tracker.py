@@ -6,6 +6,9 @@ import re
 import csv
 from io import StringIO 
 
+from google.colab import drive
+drive.mount('/content/drive')
+
 # --- Global Configurations ---
 # The path is dynamic, taken from st.session_state.file_path
 DEFAULT_FILE_NAME = 'job_applications.csv' 
