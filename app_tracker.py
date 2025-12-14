@@ -1,108 +1,127 @@
 import streamlit as st
 import pandas as pd
+import sqlite3
 import os
 from datetime import datetime
 import re
-import csv
-from io import StringIO 
 
 # --- Global Configurations ---
-# Default file path for use on Streamlit Community Cloud (local sandbox)
-DEFAULT_FILE_NAME = 'job_applications.csv' 
+# The database file will be stored in the root of the GitHub repo.
+DB_FILE = 'tracker.db' 
+TABLE_NAME = 'applications'
 ALLOWED_STATUSES = ["Submitted", "Interviewing", "Rejected", "Not Submitted"]
 URL_REGEX = r"https?://(?:www\.|(?!www\.))[a-zA-Z0-9]+\.[^\s]{2,}"
 HEADERS = ['Job_Title', 'Company', 'Date_Submitted', 'Requirements_Matched', 'Link', 'Status', "Require_Enhancement"]
 
 # --- Core Data Persistence Functions ---
 
-@st.cache_data(show_spinner="Loading historical data...")
-def load_data():
+@st.cache_resource
+def get_db_connection():
     """
-    Reads the entire historical dataset from the file path stored in session state.
+    Establishes a connection to the SQLite database.
+    Uses st.cache_resource to ensure the connection object is reused across reruns.
     """
-    file_path = st.session_state.file_path
-    
-    # 1. Check if the file exists and handle folder creation
-    if not os.path.exists(file_path):
-        try:
-            # Create necessary directories and initialize the file
-            # Use os.path.dirname and check if it's non-empty to avoid creating directories for simple file names
-            dir_name = os.path.dirname(file_path)
-            if dir_name:
-                os.makedirs(dir_name, exist_ok=True)
-                
-            df = pd.DataFrame(columns=HEADERS)
-            df.to_csv(file_path, index=False)
-            st.toast("New data file initialized.", icon="📝")
-            return df
-        except Exception as e:
-            st.warning(f"Could not initialize file path: {file_path}. Error: {e}. Using an empty table in memory.")
-            return pd.DataFrame(columns=HEADERS)
-    else:
-        # 2. File exists: Load the historical data
-        try:
-            df = pd.read_csv(file_path)
-            # Ensure columns are standardized and ordered correctly
-            df = df.reindex(columns=HEADERS, fill_value='')
-            return df
-        except Exception as e:
-            st.error(f"Error reading file at {file_path}. Please check file integrity. Error: {e}")
-            return pd.DataFrame(columns=HEADERS)
-
-def save_data(df):
-    """
-    Saves the complete, current state of the DataFrame (old data + new changes) 
-    back to the file, ensuring all history is preserved and updated.
-    """
-    file_path = st.session_state.file_path
     try:
-        df.to_csv(file_path, index=False)
-        st.toast(f"Data saved successfully (complete snapshot written) to {file_path}", icon="💾")
+        # Connects to the database file. If it doesn't exist, it creates it.
+        conn = sqlite3.connect(DB_FILE)
+        return conn
     except Exception as e:
-        st.error(f"Error saving data to {file_path}: {e}")
+        st.error(f"Error connecting to database: {e}")
+        return None
+
+def initialize_database(conn):
+    """
+    Creates the applications table if it doesn't exist.
+    """
+    try:
+        cursor = conn.cursor()
+        # SQL statement to create the table
+        create_table_sql = f"""
+        CREATE TABLE IF NOT EXISTS {TABLE_NAME} (
+            Job_Title TEXT,
+            Company TEXT,
+            Date_Submitted TEXT,
+            Requirements_Matched TEXT,
+            Link TEXT,
+            Status TEXT,
+            Require_Enhancement TEXT
+        );
+        """
+        cursor.execute(create_table_sql)
+        conn.commit()
+        # st.toast("Database table initialized.")
+    except Exception as e:
+        st.error(f"Error initializing database table: {e}")
+
+
+@st.cache_data(show_spinner="Loading application data from SQLite...")
+def load_data_from_db():
+    """
+    Loads all data from the SQLite table into a Pandas DataFrame.
+    """
+    conn = get_db_connection()
+    if conn is None:
+        return pd.DataFrame(columns=HEADERS)
+
+    try:
+        # Use Pandas to read the entire SQL table into a DataFrame
+        df = pd.read_sql_query(f"SELECT * FROM {TABLE_NAME}", conn)
+        df = df.reindex(columns=HEADERS, fill_value='')
+        return df
+    except Exception as e:
+        st.error(f"Error reading data from table: {e}")
+        return pd.DataFrame(columns=HEADERS)
+
+
+def save_data_to_db(df):
+    """
+    Saves the complete DataFrame back to the SQLite table, replacing the old data.
+    This ensures all historical data and changes are saved atomically.
+    """
+    conn = get_db_connection()
+    if conn is None:
+        return
+
+    try:
+        # 'replace' argument ensures the old table content is deleted and replaced 
+        # with the current, complete DataFrame state (old + new rows/changes).
+        df.to_sql(TABLE_NAME, conn, if_exists='replace', index=False)
+        conn.commit()
+        st.toast("Data saved successfully to SQLite database.", icon="💾")
+    except Exception as e:
+        st.error(f"Error saving data to database: {e}")
+
+
+# --- INITIAL SETUP ---
+conn = get_db_connection()
+if conn:
+    initialize_database(conn)
 
 # --- Streamlit UI Pages/Functions ---
 
 def show_configuration():
-    """Page for configuring the file path and clearing the cache."""
+    """
+    Configuration page (simplified for SQLite, as the file is fixed).
+    """
     st.header("⚙️ Data Source Configuration")
     
-    st.warning("""
-    🚨 **Data Persistence Note:**
-    * **Google Drive:** To use paths like `/content/drive/MyDrive/...`, you must run this app **inside a Google Colab notebook** where your Drive is mounted.
-    * **If data is missing:** Use the button below to force a complete reload.
-    """)
-
-    current_path = st.session_state.file_path
-    st.markdown(f"**Current Data Path:** `{current_path}`")
-    
-    new_path = st.text_input(
-        "Enter new file path (e.g., /content/drive/MyDrive/JobData/tracker.csv):",
-        value=current_path
-    )
-    
-    if st.button("Apply New Path and Reload Data"):
-        if st.session_state.file_path != new_path:
-            st.session_state.file_path = new_path
-            st.session_state.df = load_data()
-            st.success(f"File path updated and historical data reloaded from: {new_path}")
-        else:
-            st.info("Path is unchanged.")
-        st.rerun() # FIXED: Use st.rerun()
+    st.success(f"Database is currently using a persistent SQLite file: `{DB_FILE}`.")
+    st.info("Your data is saved directly to this file in the repository.")
 
     st.markdown("---")
-    # --- CRITICAL FIX FOR DATA INCONSISTENCY ---
+    
+    # --- CRITICAL FIX: Clear cache and force reload ---
     if st.button("🔄 **Clear Streamlit Cache and Force Full Reload**", type="primary"):
         st.cache_data.clear()
-        st.session_state.df = load_data() 
+        st.session_state.df = load_data_from_db() 
         st.success("Cache cleared and data reloaded successfully!")
-        st.rerun() # FIXED: Use st.rerun()
+        st.rerun() 
 
 
 def show_data_view(df):
     """Displays the current job applications data."""
     st.header("📋 Job Applications Data (Historical View)")
-    st.markdown(f"Data Source: `{st.session_state.file_path}`")
+    st.markdown(f"Data Source: SQLite Database (`{DB_FILE}`) | Table: `{TABLE_NAME}`")
     if df.empty:
         st.info("The tracker is currently empty. Add a new entry to get started!")
     else:
@@ -142,9 +161,9 @@ def show_add_entry_form(df):
                 }])
                 
                 updated_df = pd.concat([df, new_entry], ignore_index=True)
-                save_data(updated_df) 
+                save_data_to_db(updated_df) 
                 st.session_state.df = updated_df
-                st.rerun() # FIXED: Use st.rerun()
+                st.rerun()
 
 
 def show_modify_entry_form(df):
@@ -172,7 +191,7 @@ def show_modify_entry_form(df):
                     st.text(f"Date_Submitted: {selected_row[col]} (Not editable)")
                     new_values[col] = selected_row[col]
                 elif col == 'Status':
-                    current_status = str(selected_row[col]) if selected_row[col] in ALLOWED_STATUSES else ALLOWED_STATUSES[0]
+                    current_status = str(selected_row[col]) if str(selected_row[col]) in ALLOWED_STATUSES else ALLOWED_STATUSES[0]
                     new_values[col] = st.selectbox(f"New Status for {col}:", options=ALLOWED_STATUSES, index=ALLOWED_STATUSES.index(current_status))
                 else:
                     new_values[col] = st.text_area(f"New Value for {col}:", value=selected_row[col], height=50)
@@ -183,10 +202,10 @@ def show_modify_entry_form(df):
                 for col in HEADERS:
                     df.loc[update_index, col] = new_values[col]
                 
-                save_data(df) 
+                save_data_to_db(df) 
                 st.session_state.df = df
                 st.success(f"Entry modified successfully!")
-                st.rerun() # FIXED: Use st.rerun()
+                st.rerun()
 
 
 def show_delete_form(df):
@@ -210,10 +229,10 @@ def show_delete_form(df):
             rows_removed = rows_before - len(df_filtered)
             
             if rows_removed > 0:
-                save_data(df_filtered) 
+                save_data_to_db(df_filtered) 
                 st.session_state.df = df_filtered
                 st.success(f"Successfully deleted {rows_removed} row(s) where '{col_to_filter}' was '{value_to_delete}'.")
-                st.rerun() # FIXED: Use st.rerun()
+                st.rerun()
             else:
                 st.warning(f"No rows found with the value '{value_to_delete}' to delete.")
 
@@ -224,11 +243,8 @@ st.title("💼 Job Application Tracker")
 st.markdown("Use the sidebar to navigate.")
 
 # 1. Initialize Session State Variables
-if 'file_path' not in st.session_state:
-    # Set default path to a simple local file for Streamlit Cloud deployment
-    st.session_state.file_path = DEFAULT_FILE_NAME 
 if 'df' not in st.session_state:
-    st.session_state.df = load_data()
+    st.session_state.df = load_data_from_db()
 
 
 # 2. Sidebar Navigation
