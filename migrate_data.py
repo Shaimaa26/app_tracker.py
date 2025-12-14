@@ -5,7 +5,7 @@ import os
 # --- Configuration ---
 # 1. PATH TO YOUR OLD CSV FILE:
 #    (Replace this with the actual path where your 5 rows CSV file is saved)
-OLD_CSV_PATH = '/path/to/your/old/job_applications_Update.csv' 
+OLD_CSV_PATH = '/content/drive/MyDrive/Track_Jobs/job_applications_Update.csv' 
 
 # 2. NAME OF THE NEW SQLITE DATABASE FILE:
 #    (Must match the name used in your Streamlit app: 'tracker.db')
